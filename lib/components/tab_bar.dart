@@ -33,6 +33,7 @@ class CNTabBar extends StatefulWidget {
     this.rightCount = 1,
     this.shrinkCentered = true,
     this.splitSpacing = 8.0,
+    this.rightWidth,
   });
 
   /// Items to display in the tab bar.
@@ -67,6 +68,13 @@ class CNTabBar extends StatefulWidget {
   /// Gap between left/right halves when split.
   final double splitSpacing; // gap between left/right halves when split
 
+  /// Fixed width for the trailing group when [split] is true.
+  ///
+  /// Defaults to the width the group asks for, which is a full tab slot even
+  /// for a single icon-only item. Set it to the bar height to get a circular
+  /// trailing button.
+  final double? rightWidth;
+
   @override
   State<CNTabBar> createState() => _CNTabBarState();
 }
@@ -84,6 +92,7 @@ class _CNTabBarState extends State<CNTabBar> {
   bool? _lastSplit;
   int? _lastRightCount;
   double? _lastSplitSpacing;
+  double? _lastRightWidth;
 
   bool get _isDark => CupertinoTheme.of(context).brightness == Brightness.dark;
   Color? get _effectiveTint =>
@@ -144,6 +153,7 @@ class _CNTabBarState extends State<CNTabBar> {
       'split': widget.split,
       'rightCount': widget.rightCount,
       'splitSpacing': widget.splitSpacing,
+      if (widget.rightWidth != null) 'rightWidth': widget.rightWidth,
       'style': encodeStyle(context, tint: _effectiveTint)
         ..addAll({
           if (widget.backgroundColor != null)
@@ -190,6 +200,7 @@ class _CNTabBarState extends State<CNTabBar> {
     _lastSplit = widget.split;
     _lastRightCount = widget.rightCount;
     _lastSplitSpacing = widget.splitSpacing;
+    _lastRightWidth = widget.rightWidth;
   }
 
   Future<dynamic> _onMethodCall(MethodCall call) async {
@@ -248,16 +259,19 @@ class _CNTabBarState extends State<CNTabBar> {
     // Layout updates (split / insets)
     if (_lastSplit != widget.split ||
         _lastRightCount != widget.rightCount ||
-        _lastSplitSpacing != widget.splitSpacing) {
+        _lastSplitSpacing != widget.splitSpacing ||
+        _lastRightWidth != widget.rightWidth) {
       await ch.invokeMethod('setLayout', {
         'split': widget.split,
         'rightCount': widget.rightCount,
         'splitSpacing': widget.splitSpacing,
+        if (widget.rightWidth != null) 'rightWidth': widget.rightWidth,
         'selectedIndex': widget.currentIndex,
       });
       _lastSplit = widget.split;
       _lastRightCount = widget.rightCount;
       _lastSplitSpacing = widget.splitSpacing;
+      _lastRightWidth = widget.rightWidth;
       _requestIntrinsicSize();
     }
   }

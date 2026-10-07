@@ -14,6 +14,11 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
   private var leftInsetVal: CGFloat = 0
   private var rightInsetVal: CGFloat = 0
   private var splitSpacingVal: CGFloat = 8
+  // Fixed width for the trailing group; nil means "whatever it asks for".
+  private var rightWidthVal: CGFloat? = nil
+  // Trailing group rendered as a round glass button instead of a tab bar.
+  private var rightButton: UIButton?
+  private var rightButtonIndex: Int = 0
 
   init(frame: CGRect, viewId: Int64, args: Any?, messenger: FlutterBinaryMessenger) {
     self.channel = FlutterMethodChannel(name: "CupertinoNativeTabBar_\(viewId)", binaryMessenger: messenger)
@@ -46,6 +51,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
       if let s = dict["split"] as? NSNumber { split = s.boolValue }
       if let rc = dict["rightCount"] as? NSNumber { rightCount = rc.intValue }
       if let sp = dict["splitSpacing"] as? NSNumber { splitSpacingVal = CGFloat(truncating: sp) }
+      if let rw = dict["rightWidth"] as? NSNumber { rightWidthVal = CGFloat(truncating: rw) }
       // content insets controlled by Flutter padding; keep zero here
     }
 
@@ -69,7 +75,44 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
       return items
     }
     let count = max(labels.count, symbols.count)
-    if split && count > rightCount {
+    if #available(iOS 26.0, *), split && count > rightCount,
+       Self.usesRoundButton(rightWidthVal, rightCount) {
+      let leftEnd = count - rightCount
+      let left = UITabBar(frame: .zero)
+      tabBarLeft = left
+      left.translatesAutoresizingMaskIntoConstraints = false
+      left.delegate = self
+      if let bg = bg { left.barTintColor = bg }
+      if #available(iOS 10.0, *), let tint = tint { left.tintColor = tint }
+      if let ap = appearance { if #available(iOS 13.0, *) { left.standardAppearance = ap } }
+      left.items = buildItems(0..<leftEnd)
+      if selectedIndex >= 0, selectedIndex < leftEnd, let items = left.items {
+        left.selectedItem = items[selectedIndex]
+      }
+      let diameter = rightWidthVal ?? 56
+      let button = Self.makeRoundGlassButton(
+        symbol: leftEnd < symbols.count ? symbols[leftEnd] : "",
+        tint: tint,
+        diameter: diameter)
+      rightButton = button
+      rightButtonIndex = leftEnd
+      button.addTarget(self, action: #selector(rightButtonTapped), for: .touchUpInside)
+      container.addSubview(left); container.addSubview(button)
+      let spacing: CGFloat = splitSpacingVal
+      // The left bar takes everything the button leaves: a UITabBar draws its
+      // glass at its own slot widths inside that frame, so asking it for an
+      // intrinsic width here only starves it.
+      NSLayoutConstraint.activate([
+        button.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
+        button.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+        button.widthAnchor.constraint(equalToConstant: diameter),
+        button.heightAnchor.constraint(equalToConstant: diameter),
+        left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
+        left.topAnchor.constraint(equalTo: container.topAnchor),
+        left.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        left.trailingAnchor.constraint(equalTo: button.leadingAnchor, constant: -spacing),
+      ])
+    } else if split && count > rightCount {
       let leftEnd = count - rightCount
       let left = UITabBar(frame: .zero)
       let right = UITabBar(frame: .zero)
@@ -94,7 +137,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
       // Compute content-fitting widths for both bars and apply symmetric spacing
       let spacing: CGFloat = splitSpacingVal
       let leftWidth = left.sizeThatFits(.zero).width + leftInset * 2
-      let rightWidth = right.sizeThatFits(.zero).width + rightInset * 2
+      let rightWidth = rightWidthVal ?? (right.sizeThatFits(.zero).width + rightInset * 2)
       let total = leftWidth + rightWidth + spacing
       // If total exceeds container, fall back to proportional widths
       if total > container.bounds.width {
@@ -178,7 +221,20 @@ channel.setMethodCallHandler { [weak self] call, result in
             return items
           }
           let count = max(labels.count, symbols.count)
-          if self.isSplit && count > self.rightCountVal, let left = self.tabBarLeft, let right = self.tabBarRight {
+          if let button = self.rightButton, let left = self.tabBarLeft {
+            let leftEnd = count - self.rightCountVal
+            left.items = buildItems(0..<leftEnd)
+            if selectedIndex >= 0, selectedIndex < leftEnd, let items = left.items {
+              left.selectedItem = items[selectedIndex]
+            }
+            if leftEnd < symbols.count, #available(iOS 15.0, *) {
+              let d = self.rightWidthVal ?? 56
+              button.configuration?.image = UIImage(
+                systemName: symbols[leftEnd],
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: d * 0.46, weight: .regular))
+            }
+            result(nil)
+          } else if self.isSplit && count > self.rightCountVal, let left = self.tabBarLeft, let right = self.tabBarRight {
             let leftEnd = count - self.rightCountVal
             left.items = buildItems(0..<leftEnd)
             right.items = buildItems(leftEnd..<count)
@@ -204,11 +260,15 @@ channel.setMethodCallHandler { [weak self] call, result in
           let leftInset = self.leftInsetVal
           let rightInset = self.rightInsetVal
           if let sp = args["splitSpacing"] as? NSNumber { self.splitSpacingVal = CGFloat(truncating: sp) }
+          self.rightWidthVal = (args["rightWidth"] as? NSNumber).map { CGFloat(truncating: $0) }
           let selectedIndex = (args["selectedIndex"] as? NSNumber)?.intValue ?? 0
           // Remove existing bars
           self.tabBar?.removeFromSuperview(); self.tabBar = nil
           self.tabBarLeft?.removeFromSuperview(); self.tabBarLeft = nil
           self.tabBarRight?.removeFromSuperview(); self.tabBarRight = nil
+          // Relayout rebuilds plain tab bars; a round trailing button is only
+          // set up at creation time.
+          self.rightButton?.removeFromSuperview(); self.rightButton = nil
           let labels = self.currentLabels
           let symbols = self.currentSymbols
           let appearance: UITabBarAppearance? = {
@@ -241,7 +301,7 @@ channel.setMethodCallHandler { [weak self] call, result in
             self.container.addSubview(left); self.container.addSubview(right)
             let spacing: CGFloat = splitSpacingVal
             let leftWidth = left.sizeThatFits(.zero).width + leftInset * 2
-            let rightWidth = right.sizeThatFits(.zero).width + rightInset * 2
+            let rightWidth = self.rightWidthVal ?? (right.sizeThatFits(.zero).width + rightInset * 2)
             let total = leftWidth + rightWidth + spacing
             if total > self.container.bounds.width {
               let rightFraction = CGFloat(rightCount) / CGFloat(count)
@@ -312,6 +372,8 @@ channel.setMethodCallHandler { [weak self] call, result in
               }
             }
           }
+          // The round trailing button is an action, never a selection.
+          if self.rightButton != nil { result(nil); return }
           result(FlutterError(code: "bad_args", message: "Index out of range", details: nil))
         } else { result(FlutterError(code: "bad_args", message: "Missing index", details: nil)) }
       case "setStyle":
@@ -321,6 +383,7 @@ channel.setMethodCallHandler { [weak self] call, result in
             if let bar = self.tabBar { bar.tintColor = c }
             if let left = self.tabBarLeft { left.tintColor = c }
             if let right = self.tabBarRight { right.tintColor = c }
+            if let button = self.rightButton { button.tintColor = c }
           }
           if let n = args["backgroundColor"] as? NSNumber {
             let c = Self.colorFromARGB(n.intValue)
@@ -339,6 +402,33 @@ channel.setMethodCallHandler { [weak self] call, result in
         result(FlutterMethodNotImplemented)
       }
     }
+  }
+
+  /// A single trailing item with a forced width is a round action button, not
+  /// a tab: a tab bar always draws its glass at full tab-slot width, so the
+  /// only way to a circle is to stop using one.
+  static func usesRoundButton(_ rightWidth: CGFloat?, _ rightCount: Int) -> Bool {
+    guard rightWidth != nil, rightCount == 1 else { return false }
+    if #available(iOS 26.0, *) { return true }
+    return false
+  }
+
+  @available(iOS 26.0, *)
+  static func makeRoundGlassButton(symbol: String, tint: UIColor?, diameter: CGFloat) -> UIButton {
+    var config = UIButton.Configuration.prominentGlass()
+    config.cornerStyle = .capsule
+    config.contentInsets = .zero
+    config.image = UIImage(
+      systemName: symbol,
+      withConfiguration: UIImage.SymbolConfiguration(pointSize: diameter * 0.46, weight: .regular))
+    let button = UIButton(configuration: config)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    if let tint = tint { button.tintColor = tint }
+    return button
+  }
+
+  @objc func rightButtonTapped() {
+    channel.invokeMethod("valueChanged", arguments: ["index": rightButtonIndex])
   }
 
   func view() -> UIView { container }
